@@ -86,7 +86,7 @@ const statusState = ctx.state("Ready");
 // --- TRAY ---
 const tray = ctx.newTray({
     tooltipText: "Dub Badge Settings",
-    iconUrl: "https://seanime.rahim.app/logo_2.png", 
+    iconUrl: "https://raw.githubusercontent.com/Bas1874/MyDubList-Seanime/refs/heads/main/src/icons/logo.png", 
     withContent: true
 });
 
