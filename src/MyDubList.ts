@@ -84,7 +84,6 @@ function init() {
         const debugRef = ctx.fieldRef(savedDebug);
         const statusState = ctx.state("Ready");
 
-        // Track currently loaded data to avoid re-fetching on color changes
         let currentLoadedLang = "";
         let currentLoadedConf = "";
 
@@ -108,6 +107,17 @@ function init() {
             ], { gap: 4, style: { width: "250px", padding: "10px" } });
         });
 
+        // --- NAVIGATION HANDLER (Fix Stuck Tooltips) ---
+        ctx.screen.onNavigate(async () => {
+            try {
+                // Force remove the tooltip whenever page changes
+                const tooltips = await ctx.dom.query("#seanime-dub-tooltip-temp");
+                for (const tt of tooltips) {
+                    await tt.remove();
+                }
+            } catch (e) {}
+        });
+
         // --- SMART RELOAD HANDLER ---
         ctx.registerEventHandler("reload-data", async () => {
             const newLang = langRef.current;
@@ -119,14 +129,11 @@ function init() {
             setStorageItem("dub-badge-color", colRef.current);
             setStorageItem("dub-badge-debug", debugRef.current);
 
-            // Remove existing badges first (UI Reset)
             await resetDomBadges();
 
-            // Only fetch data if Language or Confidence changed, or if data isn't ready
             if (newLang !== currentLoadedLang || newConf !== currentLoadedConf || !isDataReady) {
                 await loadDubData();
             } else {
-                // If only color/position changed, just trigger a re-scan with existing data
                 triggerScan();
             }
         });
@@ -135,7 +142,7 @@ function init() {
         const selectorBase = "[data-media-entry-card-body='true'], [data-media-entry-card-hover-popup-banner-container='true']";
         const dubbedAnilistIds = new Set<string>();
         let isDataReady = false;
-        let isScanning = false; // Scan Lock
+        let isScanning = false;
 
         // --- HELPERS ---
         const triggerScan = async () => {
@@ -227,7 +234,6 @@ function init() {
                     isPopup = true;
                 }
 
-                // --- 1. Attribute Check (Fastest) ---
                 const directDataId = await el.getAttribute("data-media-id");
                 if (directDataId) {
                     mediaId = directDataId;
@@ -239,7 +245,6 @@ function init() {
                     }
                 }
 
-                // --- 2. Parent Check (Medium) ---
                 if (mediaId === "N/A" && !isPopup) {
                     let tempEl = el;
                     for (let i = 0; i < 4; i++) {
@@ -258,9 +263,7 @@ function init() {
                     }
                 }
 
-                // --- 3. HTML Analysis (Slowest - Fallback) ---
                 if (mediaId === "N/A" && el.innerHTML) {
-                    // Check for existing badges for layout purposes
                     if (el.innerHTML.includes("data-media-entry-card-body-releasing-badge-container") ||
                         el.innerHTML.includes("data-media-entry-card-body-next-airing-badge-container") ||
                         el.innerHTML.includes("data-media-entry-card-hover-popup-banner-releasing-badge-container")) {
@@ -285,7 +288,6 @@ function init() {
                         }
                     }
                 } else if (mediaId !== "N/A" && el.innerHTML) {
-                    // We found ID fast, but still need to check layout
                     if (el.innerHTML.includes("data-media-entry-card-body-releasing-badge-container") ||
                         el.innerHTML.includes("data-media-entry-card-body-next-airing-badge-container") ||
                         el.innerHTML.includes("data-media-entry-card-hover-popup-banner-releasing-badge-container")) {
@@ -295,10 +297,8 @@ function init() {
 
                 if (mediaId !== "N/A") {
                     if (dubbedAnilistIds.has(mediaId)) {
-                        // Mark checked immediately
                         await el.setAttribute("data-dub-badge-checked", "true");
 
-                        // Colors
                         const colorSetting = colRef.current || "default";
                         let colorClass = "bg-indigo-500 hover:bg-indigo-600";
                         if (colorSetting === "red") colorClass = "bg-red-600 hover:bg-red-700";
@@ -306,7 +306,6 @@ function init() {
                         else if (colorSetting === "blue") colorClass = "bg-blue-600 hover:bg-blue-700";
                         else if (colorSetting === "orange") colorClass = "bg-orange-600 hover:bg-orange-700";
 
-                        // Positioning
                         const positionSetting = posRef.current || "beside";
                         let topValue = "8px";
                         let rightValue = "4px";
@@ -345,43 +344,49 @@ function init() {
                         await wrapper.setProperty("className", wrapperClasses);
                         await wrapper.setProperty("style", `top: ${topValue}; right: ${rightValue};`);
 
-                        // --- ADVANCED INLINE JS (Animation + Bounds Checking) ---
+                        // --- INTERACTIVE & SELECTABLE TOOLTIP LOGIC ---
                         const jsHoverLogic = `
                             (function(el) {
+                                if (!window._seanime_dub_tt) window._seanime_dub_tt = { timer: null };
+                                clearTimeout(window._seanime_dub_tt.timer);
+
                                 var id = 'seanime-dub-tooltip-temp';
                                 var ex = document.getElementById(id);
                                 if(ex) ex.remove();
+
                                 var tt = document.createElement('div');
                                 tt.id = id;
                                 tt.innerText = '${tooltipText}';
                                 
-                                /* Style: Invisible start */
-                                tt.style.cssText = 'position: absolute; z-index: 999999; background-color: #18181b; color: #FFFFFF; padding: 0.375rem 0.75rem; border-radius: 0.75rem; font-size: 0.875rem; line-height: 1.25rem; border: 1px solid #27272a; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06); overflow: hidden; pointer-events: none; white-space: nowrap; opacity: 0; transform: translateX(-50%) scale(0.95) translateY(4px); transition: opacity 150ms ease-out, transform 150ms ease-out;';
+                                tt.style.cssText = 'position: absolute; z-index: 999999; background-color: #18181b; color: #FFFFFF; padding: 0.375rem 0.75rem; border-radius: 0.75rem; font-size: 0.875rem; line-height: 1.25rem; border: 1px solid #27272a; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06); overflow: hidden; white-space: nowrap; pointer-events: auto; user-select: text; opacity: 0; transform: translateX(-50%) scale(0.95) translateY(4px); transition: opacity 150ms ease-out, transform 150ms ease-out;';
                                 
-                                /* Calculate Position */
+                                tt.onmouseenter = function() {
+                                    clearTimeout(window._seanime_dub_tt.timer);
+                                };
+                                tt.onmouseleave = function() {
+                                    window._seanime_dub_tt.timer = setTimeout(function() {
+                                        var t = document.getElementById(id);
+                                        if(t) t.remove();
+                                    }, 100);
+                                };
+
                                 var rect = el.getBoundingClientRect();
                                 var top = rect.top + window.scrollY - 34;
                                 var left = rect.left + window.scrollX + (rect.width / 2);
                                 
-                                /* Initial Place to measure width */
                                 tt.style.top = top + 'px';
                                 tt.style.left = left + 'px';
                                 document.body.appendChild(tt);
                                 
-                                /* Boundary Check (Prevent overflow) */
                                 var ttRect = tt.getBoundingClientRect();
                                 var winWidth = window.innerWidth;
                                 var pad = 10;
-                                
                                 if (ttRect.left < pad) {
-                                    /* Too far left */
                                     tt.style.left = (left + (pad - ttRect.left)) + 'px';
                                 } else if (ttRect.right > winWidth - pad) {
-                                    /* Too far right */
                                     tt.style.left = (left - (ttRect.right - (winWidth - pad))) + 'px';
                                 }
 
-                                /* Trigger Animation (Next Tick) */
                                 setTimeout(function() {
                                     tt.style.opacity = '1';
                                     tt.style.transform = 'translateX(-50%) scale(1) translateY(0)';
@@ -390,9 +395,14 @@ function init() {
                         `.replace(/\s+/g, ' ');
 
                         const jsLeaveLogic = `
-                            var tt = document.getElementById('seanime-dub-tooltip-temp'); 
-                            if(tt) tt.remove();
-                        `;
+                            (function() {
+                                if (!window._seanime_dub_tt) return;
+                                window._seanime_dub_tt.timer = setTimeout(function() {
+                                    var tt = document.getElementById('seanime-dub-tooltip-temp'); 
+                                    if(tt) tt.remove();
+                                }, 150);
+                            })()
+                        `.replace(/\s+/g, ' ');
 
                         await wrapper.setProperty("innerHTML", `
                             <div class="group relative">
@@ -409,7 +419,6 @@ function init() {
                         if (isPopup) {
                             await el.append(wrapper);
                         } else {
-                            // --- ATTACH TO PARENT ---
                             let targetContainer = el;
                             try {
                                 const p = await el.getParent();
@@ -437,11 +446,9 @@ function init() {
         };
 
         const processElements = async (elements: any[]) => {
-            // "Safe" Parallel Processing
             await Promise.all(elements.map(el => processSingleCard(el)));
         };
 
-        // Observer
         ctx.dom.observe(
             selectorBase,
             async (elements) => {
@@ -450,7 +457,6 @@ function init() {
             { identifyChildren: true, withInnerHTML: true }
         );
 
-        // Interval
         ctx.setInterval(async () => {
             if (!isDataReady || isScanning) return;
             isScanning = true;
