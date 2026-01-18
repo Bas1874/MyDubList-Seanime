@@ -94,13 +94,11 @@ function init() {
         tray.render(() => {
             return tray.stack([
                 tray.text("Dub Badge Settings", { style: { fontWeight: "bold", fontSize: "1rem" } }),
-
                 tray.select("Language", { options: LANGUAGES, fieldRef: langRef }),
                 tray.select("Confidence", { options: CONFIDENCE_LEVELS, fieldRef: confRef }),
                 tray.select("Badge Position", { options: POSITION_OPTIONS, fieldRef: posRef }),
                 tray.select("Badge Color", { options: COLOR_OPTIONS, fieldRef: colRef }),
                 tray.select("Debug Mode (Show ID)", { options: DEBUG_OPTIONS, fieldRef: debugRef }),
-
                 tray.text(`Status: ${statusState.get()}`, { style: { fontSize: "0.8rem", color: "#888", marginBottom: "5px" } }),
                 tray.button("Save & Reload", { onClick: "reload-data", intent: "primary", style: { width: "100%" } })
             ], { gap: 4, style: { width: "250px", padding: "10px" } });
@@ -152,7 +150,6 @@ function init() {
 
                 isDataReady = true;
                 statusState.set(`Active: ${lang} (${dubbedAnilistIds.size})`);
-                console.log(`[Dub Badge] Loaded ${dubbedAnilistIds.size} entries.`);
             } catch (e) {
                 console.error("[Dub Badge] Error:", e);
                 statusState.set("Error");
@@ -176,7 +173,6 @@ function init() {
         loadDubData();
 
         // --- UI OBSERVER ---
-        // Removed [data-episode-card-image-container='true'] to exclude episode cards
         const selectorBase = "[data-media-entry-card-body='true'], [data-media-entry-card-hover-popup-banner-container='true']";
 
         const processSingleCard = async (el: any) => {
@@ -185,15 +181,16 @@ function init() {
                 if (!isDataReady) return;
 
                 let mediaId = "N/A";
-                let hasExistingBadge = false;
+                let hasExistingBadge = false; 
                 let isPopup = false;
-
+                
                 if (await el.getAttribute("data-media-entry-card-hover-popup-banner-container") === "true") {
                     isPopup = true;
                 }
 
                 // Strategy 1: Inner HTML Analysis
                 if (el.innerHTML) {
+                    // Check if other badges exist (to calculate position)
                     if (el.innerHTML.includes("data-media-entry-card-body-releasing-badge-container") ||
                         el.innerHTML.includes("data-media-entry-card-body-next-airing-badge-container") ||
                         el.innerHTML.includes("data-media-entry-card-hover-popup-banner-releasing-badge-container")) {
@@ -279,7 +276,6 @@ function init() {
                             }
                         }
 
-                        // --- TOOLTIP TEXT ---
                         const debugMode = debugRef.current || "false";
                         const tooltipText = debugMode === "true" ? mediaId : "Dubbed";
 
@@ -287,7 +283,7 @@ function init() {
                         const wrapperClasses = [
                             "seanime-dub-badge-wrapper",
                             "absolute",
-                            isPopup ? "z-[60]" : "z-[12]",
+                            isPopup ? "z-[60]" : "z-[20]",
                             "flex",
                             "items-center",
                             "group/badge",
@@ -304,52 +300,64 @@ function init() {
                         await wrapper.setProperty("className", wrapperClasses);
                         await wrapper.setProperty("style", `top: ${topValue}; right: ${rightValue};`);
 
-                        // --- TOOLTIP (No Margin) ---
-                        // 'mb-2' removed. Now sits flush on top of the badge.
+                        // --- INLINE JS PORTAL TOOLTIP (With Animation) ---
+                        const jsHoverLogic = `
+                            (function(el) {
+                                var id = 'seanime-dub-tooltip-temp';
+                                var ex = document.getElementById(id);
+                                if(ex) ex.remove();
+                                var tt = document.createElement('div');
+                                tt.id = id;
+                                tt.innerText = '${tooltipText}';
+                                
+                                /* Initial State: Opacity 0, Scale 0.95, TranslateY 4px */
+                                tt.style.cssText = 'position: absolute; z-index: 99999; background-color: #18181b; color: #FFFFFF; padding: 0.375rem 0.75rem; border-radius: 0.75rem; font-size: 0.875rem; line-height: 1.25rem; border: 1px solid #27272a; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06); overflow: hidden; pointer-events: none; white-space: nowrap; opacity: 0; transform: translateX(-50%) scale(0.95) translateY(4px); transition: opacity 150ms ease-out, transform 150ms ease-out;';
+                                
+                                var rect = el.getBoundingClientRect();
+                                var top = rect.top + window.scrollY - 34;
+                                var left = rect.left + window.scrollX + (rect.width / 2);
+                                tt.style.top = top + 'px';
+                                tt.style.left = left + 'px';
+                                
+                                document.body.appendChild(tt);
+                                
+                                /* Force wait 10ms for DOM paint, then animate to final state: TranslateY 0 */
+                                setTimeout(function() {
+                                    tt.style.opacity = '1';
+                                    tt.style.transform = 'translateX(-50%) scale(1) translateY(0)';
+                                }, 10);
+                            })(this)
+                        `.replace(/\s+/g, ' ');
+
+                        const jsLeaveLogic = `
+                            var tt = document.getElementById('seanime-dub-tooltip-temp'); 
+                            if(tt) tt.remove();
+                        `;
+
                         await wrapper.setProperty("innerHTML", `
                             <div class="group relative">
-                                <span class="UI-Badge__root inline-flex flex-none w-fit overflow-hidden justify-center items-center gap-2 text-white ${colorClass} h-7 px-2.5 text-md font-semibold tracking-wide rounded-full shadow-md cursor-pointer transition-colors group">
+                                <span 
+                                    onmouseenter="${jsHoverLogic}"
+                                    onmouseleave="${jsLeaveLogic}"
+                                    class="UI-Badge__root inline-flex flex-none w-fit overflow-hidden justify-center items-center gap-2 text-white ${colorClass} h-7 px-2.5 text-md font-semibold tracking-wide rounded-full shadow-md cursor-pointer transition-colors group"
+                                >
                                     <svg stroke="currentColor" fill="currentColor" stroke-width="0" viewBox="0 0 24 24" height="1.2em" width="1.2em" xmlns="http://www.w3.org/2000/svg"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"></path><path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"></path></svg>
                                 </span>
-                                <div class="absolute bottom-full left-1/2 -translate-x-1/2 opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none whitespace-nowrap UI-Tooltip__root z-50 overflow-hidden rounded-xl px-3 py-1.5 text-sm shadow-md bg-gray-900 border border-gray-800 text-white">
-                                    ${tooltipText}
-                                </div>
                             </div>
                         `);
 
                         if (isPopup) {
                             await el.append(wrapper);
                         } else {
-                            // --- INTELLIGENT ROOT FINDING ---
-                            // Look for the Anchor tag (href) up to 4 levels up.
-                            // This ensures we attach to the Card Root, avoiding overflow:hidden from inner containers.
+                            // --- ATTACH TO PARENT ---
                             let targetContainer = el;
-                            let currentSearch = el;
-                            let foundAnchor = false;
+                            try {
+                                const p = await el.getParent();
+                                if (p && await p.getAttribute("href")) targetContainer = p;
+                            } catch {}
 
-                            for (let i = 0; i < 4; i++) {
-                                try {
-                                    const p = await currentSearch.getParent();
-                                    if (!p) break;
-
-                                    const href = await p.getAttribute("href");
-                                    if (href) {
-                                        targetContainer = p;
-                                        foundAnchor = true;
-                                        break;
-                                    }
-
-                                    // Fallback: Grandparent (index 1 = 2 levels up) is usually safe if no link found
-                                    if (i === 1) targetContainer = p;
-
-                                    currentSearch = p;
-                                } catch (e) { break; }
-                            }
-
-                            // Ensure the container can handle absolute positioning
                             await targetContainer.setStyle("position", "relative");
 
-                            // Prevent duplicates
                             if (!(await targetContainer.getAttribute("data-has-dub-badge"))) {
                                 await targetContainer.append(wrapper);
                                 await targetContainer.setAttribute("data-has-dub-badge", "true");
