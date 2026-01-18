@@ -84,6 +84,10 @@ function init() {
         const debugRef = ctx.fieldRef(savedDebug);
         const statusState = ctx.state("Ready");
 
+        // Track currently loaded data to avoid re-fetching on color changes
+        let currentLoadedLang = "";
+        let currentLoadedConf = "";
+
         // --- TRAY ---
         const tray = ctx.newTray({
             tooltipText: "Dub Badge Settings",
@@ -104,19 +108,51 @@ function init() {
             ], { gap: 4, style: { width: "250px", padding: "10px" } });
         });
 
+        // --- SMART RELOAD HANDLER ---
         ctx.registerEventHandler("reload-data", async () => {
-            setStorageItem("dub-badge-lang", langRef.current);
-            setStorageItem("dub-badge-conf", confRef.current);
+            const newLang = langRef.current;
+            const newConf = confRef.current;
+
+            setStorageItem("dub-badge-lang", newLang);
+            setStorageItem("dub-badge-conf", newConf);
             setStorageItem("dub-badge-pos", posRef.current);
             setStorageItem("dub-badge-color", colRef.current);
             setStorageItem("dub-badge-debug", debugRef.current);
-            await loadDubData();
+
+            // Remove existing badges first (UI Reset)
             await resetDomBadges();
+
+            // Only fetch data if Language or Confidence changed, or if data isn't ready
+            if (newLang !== currentLoadedLang || newConf !== currentLoadedConf || !isDataReady) {
+                await loadDubData();
+            } else {
+                // If only color/position changed, just trigger a re-scan with existing data
+                triggerScan();
+            }
         });
 
-        // --- DATA FETCHING ---
+        // --- SELECTORS & STATE ---
+        const selectorBase = "[data-media-entry-card-body='true'], [data-media-entry-card-hover-popup-banner-container='true']";
         const dubbedAnilistIds = new Set<string>();
         let isDataReady = false;
+        let isScanning = false; // Scan Lock
+
+        // --- HELPERS ---
+        const triggerScan = async () => {
+            if (!isDataReady || isScanning) return;
+            isScanning = true;
+            
+            const selectorRetry = `${selectorBase}:not([data-dub-badge-checked='true'])`;
+            try {
+                const retryElements = await ctx.dom.query(selectorRetry, { identifyChildren: true, withInnerHTML: true });
+                if (retryElements && retryElements.length > 0) {
+                    await processElements(retryElements);
+                }
+            } catch (e) { }
+            finally {
+                isScanning = false;
+            }
+        };
 
         const loadDubData = async () => {
             try {
@@ -148,8 +184,12 @@ function init() {
                     } catch (e) { }
                 }
 
+                currentLoadedLang = lang;
+                currentLoadedConf = conf;
                 isDataReady = true;
                 statusState.set(`Active: ${lang} (${dubbedAnilistIds.size})`);
+                
+                triggerScan();
             } catch (e) {
                 console.error("[Dub Badge] Error:", e);
                 statusState.set("Error");
@@ -170,11 +210,10 @@ function init() {
             }
         };
 
+        // Initial Load
         loadDubData();
 
-        // --- UI OBSERVER ---
-        const selectorBase = "[data-media-entry-card-body='true'], [data-media-entry-card-hover-popup-banner-container='true']";
-
+        // --- CORE PROCESSOR ---
         const processSingleCard = async (el: any) => {
             try {
                 if (await el.getAttribute("data-dub-badge-checked") === "true") return;
@@ -188,9 +227,40 @@ function init() {
                     isPopup = true;
                 }
 
-                // Strategy 1: Inner HTML Analysis
-                if (el.innerHTML) {
-                    // Check if other badges exist (to calculate position)
+                // --- 1. Attribute Check (Fastest) ---
+                const directDataId = await el.getAttribute("data-media-id");
+                if (directDataId) {
+                    mediaId = directDataId;
+                } else {
+                    const directHref = await el.getAttribute("href");
+                    if (directHref) {
+                        const match = directHref.match(/[?&]id=(\d+)/);
+                        if (match && match[1]) mediaId = match[1];
+                    }
+                }
+
+                // --- 2. Parent Check (Medium) ---
+                if (mediaId === "N/A" && !isPopup) {
+                    let tempEl = el;
+                    for (let i = 0; i < 4; i++) {
+                        try {
+                            const parent = await tempEl.getParent();
+                            if (!parent) break;
+                            const pDataId = await parent.getAttribute("data-media-id");
+                            if (pDataId) { mediaId = pDataId; break; }
+                            const pHref = await parent.getAttribute("href");
+                            if (pHref) {
+                                const match = pHref.match(/[?&]id=(\d+)/);
+                                if (match && match[1]) { mediaId = match[1]; break; }
+                            }
+                            tempEl = parent;
+                        } catch(e) { break; }
+                    }
+                }
+
+                // --- 3. HTML Analysis (Slowest - Fallback) ---
+                if (mediaId === "N/A" && el.innerHTML) {
+                    // Check for existing badges for layout purposes
                     if (el.innerHTML.includes("data-media-entry-card-body-releasing-badge-container") ||
                         el.innerHTML.includes("data-media-entry-card-body-next-airing-badge-container") ||
                         el.innerHTML.includes("data-media-entry-card-hover-popup-banner-releasing-badge-container")) {
@@ -214,46 +284,21 @@ function init() {
                             if (match && match[1]) mediaId = match[1];
                         }
                     }
-                }
-
-                // Strategy 2: Attributes/Parents
-                if (mediaId === "N/A") {
-                    if (isPopup) {
-                        try {
-                            const parent = await el.getParent();
-                            if (parent) {
-                                const href = await parent.getAttribute("href");
-                                if (href) {
-                                    const match = href.match(/[?&]id=(\d+)/);
-                                    if (match && match[1]) mediaId = match[1];
-                                }
-                            }
-                        } catch (e) { }
-                    } else {
-                        let currentElement = el;
-                        for (let i = 0; i < 10; i++) {
-                            if (!currentElement) break;
-
-                            const dataId = await currentElement.getAttribute("data-media-id");
-                            if (dataId) { mediaId = dataId; break; }
-
-                            const href = await currentElement.getAttribute("href");
-                            if (href) {
-                                const match = href.match(/[?&]id=(\d+)/);
-                                if (match && match[1]) { mediaId = match[1]; break; }
-                            }
-                            try {
-                                const parent = await currentElement.getParent();
-                                if (!parent) break;
-                                currentElement = parent;
-                            } catch (e) { break; }
-                        }
+                } else if (mediaId !== "N/A" && el.innerHTML) {
+                    // We found ID fast, but still need to check layout
+                    if (el.innerHTML.includes("data-media-entry-card-body-releasing-badge-container") ||
+                        el.innerHTML.includes("data-media-entry-card-body-next-airing-badge-container") ||
+                        el.innerHTML.includes("data-media-entry-card-hover-popup-banner-releasing-badge-container")) {
+                        hasExistingBadge = true;
                     }
                 }
 
                 if (mediaId !== "N/A") {
                     if (dubbedAnilistIds.has(mediaId)) {
-                        // --- COLORS ---
+                        // Mark checked immediately
+                        await el.setAttribute("data-dub-badge-checked", "true");
+
+                        // Colors
                         const colorSetting = colRef.current || "default";
                         let colorClass = "bg-indigo-500 hover:bg-indigo-600";
                         if (colorSetting === "red") colorClass = "bg-red-600 hover:bg-red-700";
@@ -261,7 +306,7 @@ function init() {
                         else if (colorSetting === "blue") colorClass = "bg-blue-600 hover:bg-blue-700";
                         else if (colorSetting === "orange") colorClass = "bg-orange-600 hover:bg-orange-700";
 
-                        // --- POSITIONING ---
+                        // Positioning
                         const positionSetting = posRef.current || "beside";
                         let topValue = "8px";
                         let rightValue = "4px";
@@ -300,7 +345,7 @@ function init() {
                         await wrapper.setProperty("className", wrapperClasses);
                         await wrapper.setProperty("style", `top: ${topValue}; right: ${rightValue};`);
 
-                        // --- INLINE JS PORTAL TOOLTIP (With Animation) ---
+                        // --- ADVANCED INLINE JS (Animation + Bounds Checking) ---
                         const jsHoverLogic = `
                             (function(el) {
                                 var id = 'seanime-dub-tooltip-temp';
@@ -310,18 +355,33 @@ function init() {
                                 tt.id = id;
                                 tt.innerText = '${tooltipText}';
                                 
-                                /* Initial State: Opacity 0, Scale 0.95, TranslateY 4px */
-                                tt.style.cssText = 'position: absolute; z-index: 99999; background-color: #18181b; color: #FFFFFF; padding: 0.375rem 0.75rem; border-radius: 0.75rem; font-size: 0.875rem; line-height: 1.25rem; border: 1px solid #27272a; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06); overflow: hidden; pointer-events: none; white-space: nowrap; opacity: 0; transform: translateX(-50%) scale(0.95) translateY(4px); transition: opacity 150ms ease-out, transform 150ms ease-out;';
+                                /* Style: Invisible start */
+                                tt.style.cssText = 'position: absolute; z-index: 999999; background-color: #18181b; color: #FFFFFF; padding: 0.375rem 0.75rem; border-radius: 0.75rem; font-size: 0.875rem; line-height: 1.25rem; border: 1px solid #27272a; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06); overflow: hidden; pointer-events: none; white-space: nowrap; opacity: 0; transform: translateX(-50%) scale(0.95) translateY(4px); transition: opacity 150ms ease-out, transform 150ms ease-out;';
                                 
+                                /* Calculate Position */
                                 var rect = el.getBoundingClientRect();
                                 var top = rect.top + window.scrollY - 34;
                                 var left = rect.left + window.scrollX + (rect.width / 2);
+                                
+                                /* Initial Place to measure width */
                                 tt.style.top = top + 'px';
                                 tt.style.left = left + 'px';
-                                
                                 document.body.appendChild(tt);
                                 
-                                /* Force wait 10ms for DOM paint, then animate to final state: TranslateY 0 */
+                                /* Boundary Check (Prevent overflow) */
+                                var ttRect = tt.getBoundingClientRect();
+                                var winWidth = window.innerWidth;
+                                var pad = 10;
+                                
+                                if (ttRect.left < pad) {
+                                    /* Too far left */
+                                    tt.style.left = (left + (pad - ttRect.left)) + 'px';
+                                } else if (ttRect.right > winWidth - pad) {
+                                    /* Too far right */
+                                    tt.style.left = (left - (ttRect.right - (winWidth - pad))) + 'px';
+                                }
+
+                                /* Trigger Animation (Next Tick) */
                                 setTimeout(function() {
                                     tt.style.opacity = '1';
                                     tt.style.transform = 'translateX(-50%) scale(1) translateY(0)';
@@ -377,9 +437,11 @@ function init() {
         };
 
         const processElements = async (elements: any[]) => {
+            // "Safe" Parallel Processing
             await Promise.all(elements.map(el => processSingleCard(el)));
         };
 
+        // Observer
         ctx.dom.observe(
             selectorBase,
             async (elements) => {
@@ -388,8 +450,11 @@ function init() {
             { identifyChildren: true, withInnerHTML: true }
         );
 
+        // Interval
         ctx.setInterval(async () => {
-            if (!isDataReady) return;
+            if (!isDataReady || isScanning) return;
+            isScanning = true;
+            
             const selectorRetry = `${selectorBase}:not([data-dub-badge-checked='true'])`;
             try {
                 const retryElements = await ctx.dom.query(selectorRetry, { identifyChildren: true, withInnerHTML: true });
@@ -397,6 +462,9 @@ function init() {
                     await processElements(retryElements);
                 }
             } catch (e) { }
-        }, 4000);
+            finally {
+                isScanning = false;
+            }
+        }, 2000);
     });
 }
