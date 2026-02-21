@@ -60,6 +60,30 @@ function init() {
             { label: "On", value: "true" },
         ];
 
+        // This completely bypasses Tailwind purging by adding raw CSS
+        const injectStyles = async () => {
+            try {
+                const styleId = "seanime-dub-badge-styles";
+                const existing = await ctx.dom.queryOne(`#${styleId}`);
+                if (!existing) {
+                    const styleEl = await ctx.dom.createElement("style");
+                    await styleEl.setAttribute("id", styleId);
+                    await styleEl.setText(`
+                        .group\\/media-entry-card:hover .seanime-base-dub-badge {
+                            opacity: 0 !important;
+                            visibility: hidden !important;
+                            pointer-events: none !important;
+                        }
+                    `);
+                    const body = await ctx.dom.queryOne("body");
+                    if (body) await body.append(styleEl);
+                }
+            } catch (e) {
+                console.error("Failed to inject dub badge styles", e);
+            }
+        };
+        injectStyles();
+
         // --- STORAGE HELPERS ---
         const getStorageItem = (key, def) => {
             try { return $storage.get(key) || def; } catch (e) { return def; }
@@ -107,7 +131,7 @@ function init() {
             ], { gap: 4, style: { width: "250px", padding: "10px" } });
         });
 
-        // --- NAVIGATION HANDLER (Fix Stuck Tooltips) ---
+        // --- NAVIGATION HANDLER ---
         ctx.screen.onNavigate(async () => {
             try {
                 // Force remove the tooltip whenever page changes
@@ -324,22 +348,22 @@ function init() {
                         const tooltipText = debugMode === "true" ? mediaId : "Dubbed";
 
                         const wrapper = await ctx.dom.createElement("div");
+                        
                         const wrapperClasses = [
                             "seanime-dub-badge-wrapper",
                             "absolute",
-                            isPopup ? "z-[60]" : "z-[20]",
+                            isPopup ? "z-[60]" : "z-10 seanime-base-dub-badge",
                             "flex",
                             "items-center",
                             "group/badge",
                             "pointer-events-auto",
-                            "transition-transform",
+                            "transition-all",
                             "duration-300",
                             "ease-in-out",
-                            isPopup ? "group-hover/media-entry-card:scale-100" : "group-hover/media-entry-card:scale-110",
-                            isPopup ? "" : "group-hover/media-entry-card:-translate-y-1",
+                            isPopup ? "group-hover/media-entry-card:scale-100" : "group-hover/media-entry-card:-translate-y-1",
                             "group-hover/episode-card:scale-110",
                             "group-hover/episode-card:-translate-y-1"
-                        ].join(" ");
+                        ].filter(Boolean).join(" ");
 
                         await wrapper.setProperty("className", wrapperClasses);
                         await wrapper.setProperty("style", `top: ${topValue}; right: ${rightValue};`);
