@@ -166,13 +166,25 @@ function init() {
         const selectorBase = "[data-media-entry-card-body='true'], [data-media-entry-card-hover-popup-banner-container='true']";
         const dubbedAnilistIds = new Set<string>();
         let isDataReady = false;
-        let isScanning = false;
+
+        // Seanime never answers a DOM request the page dropped (reload, window not the main tab), so a scan can hang forever.
+        // A scan older than this counts as dropped once the page has shown it is listening again.
+        const DOM_TIMEOUT_MS = 15000;
+        let scanStartedAt = 0;
+        let pageSeenAt = 0;
+
+        const markPageSeen = () => {
+            pageSeenAt = Date.now();
+        };
 
         // --- HELPERS ---
         const triggerScan = async () => {
-            if (!isDataReady || isScanning) return;
-            isScanning = true;
-            
+            if (!isDataReady) return;
+            // Sending more to a silent page would only pile up unanswered requests
+            if (scanStartedAt && (Date.now() - scanStartedAt < DOM_TIMEOUT_MS || pageSeenAt < scanStartedAt)) return;
+            const startedAt = Date.now();
+            scanStartedAt = startedAt;
+
             const selectorRetry = `${selectorBase}:not([data-dub-badge-checked='true'])`;
             try {
                 const retryElements = await ctx.dom.query(selectorRetry, { identifyChildren: true, withInnerHTML: true });
@@ -181,7 +193,7 @@ function init() {
                 }
             } catch (e) { }
             finally {
-                isScanning = false;
+                if (scanStartedAt === startedAt) scanStartedAt = 0;
             }
         };
 
@@ -239,13 +251,33 @@ function init() {
             for (const badge of oldBadges) {
                 await badge.remove();
             }
+            // Without this, cards whose badge was just removed are skipped as if they still had one
+            const badgeHosts = await ctx.dom.query("[data-has-dub-badge]");
+            for (const host of badgeHosts) {
+                await host.removeAttribute("data-has-dub-badge");
+            }
         };
 
         // Initial Load
         loadDubData();
 
         // --- CORE PROCESSOR ---
+        // The observer and a scan can get the same card at once, which would add two badges
+        const cardsInProgress = new Map<string, number>();
+
         const processSingleCard = async (el: any) => {
+            const existing = cardsInProgress.get(el.id);
+            if (existing !== undefined && Date.now() - existing < DOM_TIMEOUT_MS) return;
+            const startedAt = Date.now();
+            cardsInProgress.set(el.id, startedAt);
+            try {
+                await processCard(el);
+            } finally {
+                if (cardsInProgress.get(el.id) === startedAt) cardsInProgress.delete(el.id);
+            }
+        };
+
+        const processCard = async (el: any) => {
             try {
                 if (await el.getAttribute("data-dub-badge-checked") === "true") return;
                 if (!isDataReady) return;
@@ -454,6 +486,9 @@ function init() {
                             if (!(await targetContainer.getAttribute("data-has-dub-badge"))) {
                                 await targetContainer.append(wrapper);
                                 await targetContainer.setAttribute("data-has-dub-badge", "true");
+                            } else {
+                                // Otherwise the unused badge stays in Seanime's hidden element container
+                                await wrapper.remove();
                             }
                         }
                     }
@@ -476,25 +511,26 @@ function init() {
         ctx.dom.observe(
             selectorBase,
             async (elements) => {
+                markPageSeen();
                 await processElements(elements);
             },
             { identifyChildren: true, withInnerHTML: true }
         );
 
-        ctx.setInterval(async () => {
-            if (!isDataReady || isScanning) return;
-            isScanning = true;
-            
-            const selectorRetry = `${selectorBase}:not([data-dub-badge-checked='true'])`;
-            try {
-                const retryElements = await ctx.dom.query(selectorRetry, { identifyChildren: true, withInnerHTML: true });
-                if (retryElements && retryElements.length > 0) {
-                    await processElements(retryElements);
-                }
-            } catch (e) { }
-            finally {
-                isScanning = false;
-            }
+        // A reloaded page, or a tab that just became the main tab, has no style tag yet.
+        // Both events can fire for the same page, and two injections at once would add two tags.
+        let pageReadyAt = 0;
+        const onPageReady = () => {
+            markPageSeen();
+            if (Date.now() - pageReadyAt < 1000) return;
+            pageReadyAt = Date.now();
+            injectStyles();
+        };
+        ctx.dom.onReady(onPageReady);
+        ctx.dom.onMainTabReady(onPageReady);
+
+        ctx.setInterval(() => {
+            triggerScan();
         }, 2000);
     });
 }
